@@ -4,7 +4,7 @@
 #$ -q *@@nlp-a10          # Queue
 #$ -l gpu_card=1         
 #$ -pe smp 2
-#$ -l h_vmem=300G
+#$ -l h_vmem=100G
 
 # -----------------------------
 # 0. MODULES & ENV

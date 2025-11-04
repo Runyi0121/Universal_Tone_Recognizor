@@ -11,7 +11,8 @@ from transformers import (
     Wav2Vec2FeatureExtractor,
     Wav2Vec2Processor,
     TrainingArguments,
-    Trainer
+    Trainer,
+    Wav2Vec2Config
 )
 import torchaudio
 import torch
@@ -134,9 +135,9 @@ print("Loading dataset directly from CSV (this is memory-efficient)...")
 full_ds = load_dataset("csv", data_files=thai_csv_path, split="train")
 
 # 2. --- FIX: Select your 10,000 file subset FIRST ---
-print(f"Original dataset size: {len(full_ds)}. Subsetting to 10,000 files.")
-full_ds_subset = full_ds.select(range(50000))
-# ---------------------------------------------------
+print(f"Original dataset size: {len(full_ds)}. Subsetting to 300,000 files.")
+full_ds_subset = full_ds.select(range(15000))
+# --------------------------------------------------
 
 print("Updating file paths to point to scratch directory (on 10k subset)...")
 # 3. Now run the first map on the SMALL subset
@@ -161,6 +162,7 @@ for text in full_ds["transcription"]:
 vocab_set = set()
 for line in all_lines:
     vocab_set.update(list(line))
+vocab_set.add("|")
 
 vocab_list = sorted(list(vocab_set))
 vocab_dict = {c: i for i, c in enumerate(vocab_list)}
@@ -182,7 +184,7 @@ tokenizer = Wav2Vec2CTCTokenizer(
     "vocab.json",
     unk_token="[UNK]",
     pad_token="[PAD]",
-    word_delimiter_token=" "
+    word_delimiter_token="|"
 )
 tokenizer.save_pretrained("./ipa_tokenizer")
 
@@ -325,25 +327,53 @@ data_collator = DataCollatorCTCWithPadding(processor=processor)
 # -----------------------
 # Model
 # -----------------------
+# -----------------------
+# Model
+# -----------------------
+
+# Get special token IDs
+pad_token_id = processor.tokenizer.pad_token_id
+vocab_size = len(processor.tokenizer.get_vocab())
+
+print(f"✅ Pad token ID: {pad_token_id}")
+print(f"✅ Vocab size: {vocab_size}")
+print(f"✅ Word delimiter ID: {processor.tokenizer.word_delimiter_token_id}")
+
+# 1. Load the base model configuration
+config = Wav2Vec2Config.from_pretrained(
+    "facebook/wav2vec2-base",
+    trust_remote_code=True,
+)
+
+# 2. Update the config with YOUR custom settings
+config.update({
+    "vocab_size": vocab_size,
+    "pad_token_id": pad_token_id,
+    # ------------------- THE FIX -------------------
+    # Use the PAD token ID as the CTC blank token ID
+    "ctc_blank_token": pad_token_id, 
+    # -----------------------------------------------
+    "ctc_loss_reduction": "mean",
+    "ctc_zero_infinity": True,
+})
+
+# 3. Load the model using the modified config
 model = Wav2Vec2ForCTC.from_pretrained(
     "facebook/wav2vec2-base",
     trust_remote_code=True,
     use_safetensors=True,
-    vocab_size=len(processor.tokenizer.get_vocab()),
-    pad_token_id=processor.tokenizer.pad_token_id,
+    config=config,# <-- Pass the updated config object here
     ignore_mismatched_sizes=True
 )
 
-model.config.pad_token_id = processor.tokenizer.pad_token_id
-model.config.ctc_loss_reduction = "mean"
-model.config.ctc_zero_infinity = True
-print("✅ Model config pad_token_id:", model.config.pad_token_id)
+model.freeze_feature_extractor()
+print("✅ Model loaded with custom config.")
 
 # -----------------------
 # Training args
 # -----------------------
 training_args = TrainingArguments(
-    output_dir="./wav2vec2-thai-ctc",
+    output_dir="./model_15k",
     per_device_train_batch_size=1,
     per_device_eval_batch_size=1,
     gradient_accumulation_steps=8,
@@ -351,7 +381,7 @@ training_args = TrainingArguments(
     learning_rate=1e-4,
     warmup_steps=500,
     lr_scheduler_type="linear",
-    num_train_epochs=15,
+    num_train_epochs=20,
     save_total_limit=2,
     fp16=False,
     logging_dir="./logs",
